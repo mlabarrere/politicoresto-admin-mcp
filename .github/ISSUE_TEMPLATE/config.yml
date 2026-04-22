@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mlabarrere/politicoresto-admin-mcp/blob/main/SECURITY.md
+    about: Please follow the private disclosure process in SECURITY.md. Do not open a public issue.
+  - name: Question or general discussion
+    url: https://github.com/mlabarrere/politicoresto-admin-mcp/discussions
+    about: Use Discussions for open-ended questions, ideas, and help requests.
