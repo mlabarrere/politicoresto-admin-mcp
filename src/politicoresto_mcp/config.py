@@ -1,12 +1,13 @@
-"""Configuration du serveur MCP.
+"""Runtime configuration for the MCP server.
 
-Charge les variables d'environnement et applique les garde-fous.
+Loads environment variables, validates them, and applies the production
+safeguard. `load_settings` raises `ConfigError` on any invalid input so
+callers (CLI, tests) can decide how to react.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -15,10 +16,16 @@ from dotenv import load_dotenv
 PROD_PROJECT_REF = "gzdpisxkavpyfmhsktcg"
 STAGING_PROJECT_REF = "nvwpvckjsvicsyzpzjfi"
 
+PROD_OVERRIDE_VALUE = "yes_i_know"
+
+
+class ConfigError(RuntimeError):
+    """Raised when the runtime configuration is missing or invalid."""
+
 
 @dataclass(frozen=True)
 class Settings:
-    """Configuration runtime, immuable une fois chargée."""
+    """Immutable runtime configuration."""
 
     supabase_url: str
     service_role_key: str
@@ -38,49 +45,51 @@ class Settings:
 
 
 def _extract_project_ref(url: str) -> str:
-    """Extrait le ref projet depuis une URL Supabase.
+    """Extract the project ref from a Supabase URL.
 
-    Ex: https://nvwpvckjsvicsyzpzjfi.supabase.co -> nvwpvckjsvicsyzpzjfi
+    Example:
+        https://nvwpvckjsvicsyzpzjfi.supabase.co -> nvwpvckjsvicsyzpzjfi
     """
     parsed = urlparse(url)
     host = parsed.hostname or ""
     if not host.endswith(".supabase.co"):
-        raise ValueError(f"URL Supabase invalide: {url}")
+        raise ConfigError(f"Invalid Supabase URL: {url}")
     return host.split(".")[0]
 
 
-def load_settings() -> Settings:
-    """Charge et valide la config. Sort si invalide."""
-    load_dotenv()
+def load_settings(*, load_dotenv_file: bool = True) -> Settings:
+    """Load and validate the runtime configuration.
+
+    Args:
+        load_dotenv_file: when True (default), read variables from a local
+            `.env` file before reading the process environment. Disabled in
+            tests to keep them hermetic.
+
+    Raises:
+        ConfigError: when a required variable is missing, the URL is malformed,
+            or the URL points to production without the opt-in override.
+    """
+    if load_dotenv_file:
+        load_dotenv()
 
     supabase_url = os.environ.get("SUPABASE_PROJECT_URL", "").strip().rstrip("/")
     service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     allow_prod = os.environ.get("POLITICORESTO_ALLOW_PROD", "").strip()
 
     if not supabase_url:
-        print("ERROR: SUPABASE_PROJECT_URL manquant", file=sys.stderr)
-        sys.exit(1)
-
+        raise ConfigError("SUPABASE_PROJECT_URL is required")
     if not service_role_key:
-        print("ERROR: SUPABASE_SERVICE_ROLE_KEY manquant", file=sys.stderr)
-        sys.exit(1)
+        raise ConfigError("SUPABASE_SERVICE_ROLE_KEY is required")
 
-    try:
-        project_ref = _extract_project_ref(supabase_url)
-    except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+    project_ref = _extract_project_ref(supabase_url)
 
-    # Garde-fou prod : ne démarre pas contre prod sans override explicite
-    if project_ref == PROD_PROJECT_REF and allow_prod != "yes_i_know":
-        print(
-            "ERROR: Ce MCP est configuré pour pointer sur PROD "
+    if project_ref == PROD_PROJECT_REF and allow_prod != PROD_OVERRIDE_VALUE:
+        raise ConfigError(
+            f"Refusing to start: SUPABASE_PROJECT_URL points to production "
             f"(ref={PROD_PROJECT_REF}). "
-            "Si c'est vraiment voulu, définis POLITICORESTO_ALLOW_PROD=yes_i_know. "
-            "Sinon corrige SUPABASE_PROJECT_URL vers staging.",
-            file=sys.stderr,
+            f"If that is truly intended, set POLITICORESTO_ALLOW_PROD={PROD_OVERRIDE_VALUE}. "
+            "Otherwise point SUPABASE_PROJECT_URL at staging."
         )
-        sys.exit(1)
 
     return Settings(
         supabase_url=supabase_url,
