@@ -1,81 +1,96 @@
 ---
-name: politicoresto-mcp
-description: Outils MCP pour piloter le backend PoliticoResto (Supabase staging) en mode admin. Utilise ce skill quand l'utilisateur veut créer/modifier/lister des topics, posts, commentaires, réactions, profils utilisateurs, historiques de vote, ou positionnement politique sur sa plateforme. Ne JAMAIS utiliser contre le projet prod.
+name: politicoresto-admin-mcp
+description: MCP tools for driving the PoliticoResto Supabase backend in admin mode. Use this skill when the user asks to create, update, or list topics, posts, comments, reactions, user profiles, vote history, or political positioning on their platform. Never use it against the production project without explicit confirmation.
 ---
 
-# PoliticoResto MCP — Guide d'utilisation
+# PoliticoResto admin MCP — usage guide
 
-## Contexte
+## Context
 
-Ce serveur MCP expose le backend Supabase de PoliticoResto en mode admin (service_role, bypass RLS). Il sert à seeder staging, tester des parcours, et explorer la base depuis Claude Desktop.
+This MCP server exposes PoliticoResto's Supabase backend in admin mode
+(`service_role`, RLS bypassed). It is used to seed staging, test flows, and
+explore data from Claude Desktop.
 
-**Projet cible par défaut** : staging (`nvwpvckjsvicsyzpzjfi`).
+**Default target:** staging (`nvwpvckjsvicsyzpzjfi`).
 
-**Jamais prod** sans override explicite.
+**Never run against production** unless the user has set
+`POLITICORESTO_ALLOW_PROD=yes_i_know` and explicitly asked for it.
 
-## Modèle de données (rappel utile)
+## Data model (cheat sheet)
 
-- `topic` — unité de discussion durable (slug, titre, statut, visibilité)
-- `thread_post` — post publié dans un topic (type: article/poll/market)
-- `post` — commentaire (ou sous-commentaire via `parent_post_id`) rattaché à un `thread_post`
-- `app_profile` — profil public (username, bio, display_name)
-- `user_private_political_profile` — positionnement politique privé (partisan, idéologie, niveau d'intérêt)
-- `profile_vote_history` — déclarations de vote aux élections (avec confidence et choice_kind)
-- `election` + `election_result` — référentiel électoral
-- `reaction` — upvote/downvote sur `thread_post` ou `comment`
+- `topic` — durable discussion unit (`slug`, `title`, `topic_status`, `visibility`)
+- `thread_post` — post published inside a topic (`type`: `article` / `poll` / `market`)
+- `post` — comment or nested reply on a `thread_post`, with `depth` and optional `parent_post_id`
+- `app_profile` — public profile (`username`, `display_name`, `bio`)
+- `user_private_political_profile` — private political positioning (partisan, ideology, interest level)
+- `profile_vote_history` — declared votes (with `confidence` and `choice_kind`)
+- `election` + `election_result` — electoral reference data
+- `reaction` — polymorphic upvote/downvote on `thread_post` or `comment`
 
-**Invariant critique** : un topic publié doit avoir un post initial (thread_post). Le tool `create_topic_with_initial_post` garantit ça atomiquement.
+**Critical invariant:** a publicly visible topic must carry an initial
+`thread_post`. The `create_topic_with_initial_post` tool guarantees this
+atomically.
 
-## Pattern d'usage : l'acting user
+## The acting-user pattern
 
-La plupart des tools d'écriture ont besoin d'un "acting user" (qui crée le topic, qui commente, qui vote…). Plutôt que de passer cet user_id à chaque appel, le serveur maintient un état session :
+Every write tool needs an "acting user" (the author of the new row). Rather
+than passing `acting_user_id` to every call, the server keeps it as session
+state:
 
-1. Commence toujours par `list_profiles` pour voir qui existe
-2. Appelle `set_acting_user(user_id=...)` pour fixer l'identité
-3. Tous les writes suivants utiliseront cet user jusqu'à nouveau `set_acting_user`
+1. Call `list_profiles` to see which users exist.
+2. Call `set_acting_user(user_id=...)` to fix the identity.
+3. Every subsequent write uses that user until `set_acting_user` is called
+   again.
 
-Si tu veux simuler une conversation entre plusieurs comptes, alterne les `set_acting_user` entre les actions.
+To simulate a conversation between multiple accounts, switch `set_acting_user`
+between actions.
 
-## Tools disponibles
+## Available tools
 
-### Lecture
+### Session state
 
-- `list_topics(status=None, visibility=None, limit=20, offset=0)` — liste paginée avec filtres optionnels
-- `get_topic(topic_id_or_slug)` — topic + ses thread_posts + leurs commentaires (posts)
-- `list_profiles(limit=50)` — tous les app_profiles
-- `list_vote_history(user_id)` — historique de vote déclaré d'un user
+- `set_acting_user(user_id)` — set the identity used by subsequent writes.
+- `get_acting_user()` — inspect the currently-set acting user.
 
-### État session
+### Reads
 
-- `set_acting_user(user_id)` — fixe l'identité pour les writes suivants
-- `get_acting_user()` — retourne l'user actuellement actif
+- `list_topics(status=None, visibility=None, limit=20, offset=0)` — paginated listing with optional filters.
+- `get_topic(topic_id_or_slug)` — a topic plus its `thread_post`s and their comments.
+- `list_profiles(limit=50, offset=0)` — public profiles.
+- `list_vote_history(user_id)` — declared vote history, enriched with election details.
 
-### Écriture — contenu
+### Writes — content
 
-- `create_topic_with_initial_post(title, description, thread_post_content, ...)` — crée topic + thread_post atomiquement
-- `create_post(thread_post_id, body_markdown, parent_post_id=None)` — crée un commentaire (ou sous-commentaire si `parent_post_id`)
-- `react_to(target_type, target_id, reaction_type)` — upvote/downvote un thread_post ou comment
+- `create_topic_with_initial_post(slug, title, thread_post_content, ...)` — atomic topic + first post.
+- `create_post(thread_post_id, body_markdown, parent_post_id=None, ...)` — root comment or nested reply.
+- `react_to(target_type, target_id, reaction_type)` — upvote/downvote a `thread_post` or `comment`.
 
-### Écriture — profils
+### Writes — profiles
 
-- `upsert_profile(user_id, display_name=..., bio=..., username=...)` — public profile
-- `upsert_political_profile(user_id, partisan_term=..., ideology_term=..., interest_level=...)` — private political
-- `declare_vote(user_id, election_id, choice_kind, election_result_id=None, confidence=None, notes=None)` — ajoute une ligne `profile_vote_history`
+- `upsert_profile(user_id, display_name=?, bio=?, username=?, avatar_url=?)` — public profile.
+- `upsert_political_profile(user_id, declared_partisan_term_id=?, declared_ideology_term_id=?, political_interest_level=?, notes_private=?)` — private political positioning.
+- `declare_vote(user_id, election_id, choice_kind, election_result_id=?, confidence=?, notes=?)` — append a `profile_vote_history` row.
 
-## Bonnes pratiques
+## Good practices
 
-1. **Toujours lire avant d'écrire** : `list_profiles` avant de `set_acting_user`, `list_topics` avant de `create_topic`, etc. Évite de générer des UUIDs à l'aveugle.
+1. **Read before writing.** Call `list_profiles` before `set_acting_user`,
+   `list_topics` before `create_topic_with_initial_post`, and so on. Don't
+   fabricate UUIDs.
+2. **Respect invariants.** Don't insert into `topic` directly — always go
+   through `create_topic_with_initial_post` so the initial `thread_post`
+   exists.
+3. **Slugs.** `slug` is `citext` (case-insensitive) and must be URL-safe.
+   Prefer short kebab-case values.
+4. **Admin means admin.** RLS is bypassed. You can create inconsistent data
+   if you're careless. Use this against staging only — never dump demo data
+   into production.
+5. **Use returned IDs.** Every read tool returns IDs — feed those into the
+   next call rather than constructing UUIDs.
 
-2. **Respecter les invariants** : n'utilise pas d'insert direct sur `topic` sans créer de `thread_post` associé — utilise `create_topic_with_initial_post`.
+## When NOT to use this MCP
 
-3. **Slugs** : les slugs sont `citext` (case-insensitive) et doivent être URL-safe. Préfère les laisser auto-générés quand possible.
-
-4. **Tu peux tout faire** : en mode admin, la RLS est bypassed. Ça veut dire que tu peux créer des données incohérentes si tu ne fais pas attention. Tests et seeds only — pas de data de démo en prod.
-
-5. **Ne pas inventer d'IDs** : utilise toujours les IDs retournés par les tools de lecture, jamais d'UUIDs construits.
-
-## Quand NE PAS utiliser ce MCP
-
-- Si l'utilisateur parle de sa vraie app en production → STOP, demande confirmation
-- Si la tâche n'a rien à voir avec le backend PoliticoResto → STOP
-- Si l'user demande de "supprimer des données prod pour tester" → STOP, propose staging
+- The user is discussing their live production app — stop, confirm before
+  any write, and prefer staging.
+- The task has nothing to do with the PoliticoResto backend — stop.
+- The user asks to delete or mutate production data for testing — stop,
+  offer to do it against staging instead.
